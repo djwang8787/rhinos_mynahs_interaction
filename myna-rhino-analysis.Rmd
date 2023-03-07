@@ -1,0 +1,155 @@
+---
+title: "mynah-rhino-interaction"
+output:
+  pdf_document: default
+  html_document: default
+date: "2022-11-22"
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+pacman::p_load(dplyr, lme4, MuMIn, ggplot2, coefplot)
+
+before = read.csv('rhino-mynah-before-data.csv')
+before$status = as.factor("before")
+before.cleaned = before %>%
+  filter(!session.no %in% c("1", "4"))
+
+after = read.csv('rhino-mynah-after-data.csv')
+after.cleaned = after %>%
+  filter(!session.no %in% c("13", "27", "49"))
+
+
+after.cleaned$status = as.factor('after')
+data = rbind(before.cleaned,after.cleaned)
+
+data = data %>%
+  rowwise() %>%
+  mutate(feeding.birds = sum(feed.on, feed.not.on),
+         Time = recode(Time, "2:00 PM" = "14:00", "5:00 PM" = "17:00",
+                       "2:15 PM" = "14:15", "2:40 PM" = "14:40", "2:45 PM" = "14:45"),
+         Date = gsub('[(Mon)(Tue)(Wed)(Thu)(Fri)]', '', Date),
+         datetime = as.POSIXct(paste(Date, Time, sep = " "), format = "%d/%m/%Y %H:%M"),
+         hour = lubridate::hour(datetime),
+         session.type = recode(hour, "14" = "noon", "17" = "evening"))
+# removing Am/Pm from Time
+# remove (datename) from data$Date
+# Using a datetime instead
+# noon vs evening; bird biology
+
+data.cleaned = data %>%
+  filter(food.presence == "Yes") %>%
+  select(session.no, Weather, rhino.no, food.presence, food.presence.index,
+         Interval, feed.on, not.feed.on, feed.not.on, not.feed.not.on,
+         mynah.no, status, feeding.birds, datetime, session.type) 
+
+# note: 48 sessions before; 50 sessions after.
+```
+
+```{r data manipulation, include=FALSE}
+data.analysis = data.cleaned %>%
+  group_by(status, session.no) %>%
+  dplyr::summarise(total.feed = sum(feeding.birds),
+                   total.mynah = sum(mynah.no),
+                   prop.feed = total.feed/total.mynah,
+         prop.not.feed = 1 - prop.feed,
+         max.feed = max(feeding.birds),
+         max.birds= max(mynah.no),
+         mean.feed = mean(feeding.birds),
+         mean.birds = mean(mynah.no),
+         weather = first(Weather),
+         rhino.no = max(rhino.no),
+         food.presence = first(food.presence),
+         food.presence.index = max(food.presence.index),
+         session.type = first(session.type),
+         datetime = first(datetime)) 
+
+# predictors to consider includes: session type (noon vs evening), rhino.no (proxy as food),
+# weather (3 levels; cloudy rainy and sunny)
+
+data.analysis$prop.feed[is.na(data.analysis$prop.feed)] = 0
+data.analysis$prop.not.feed[is.na(data.analysis$prop.not.feed)] = 0
+# because bird counts were done in a minute interval within 20 mins
+# it is difficult to justify total bird counts / total feeding birds
+# as double-counting (within 20 mins) is quite likely
+
+data.analysis |>
+  summarise(cor(max.feed, max.birds),
+            cor(max.feed, mean.feed),
+            cor(max.birds, mean.birds),
+            cor(mean.feed, mean.birds))
+# Max no. of feeding birds highly correlated with max no. of birds, even between status
+```
+
+```{r analysis via lmer, include = FALSE}
+# linear regression as we're using max of no. birds
+m1 = lm(max.birds ~ 1,
+           data = data.analysis)
+
+m2 = lm(max.birds ~ weather,
+           data = data.analysis)
+
+m3 = lm(max.birds ~ rhino.no,
+           data = data.analysis)
+
+m4 = lm(max.birds ~ status,
+        data = data.analysis)
+
+m5 = lm(max.birds ~ session.type,
+        data = data.analysis)
+
+m6 = lm(max.birds ~ status + rhino.no,
+        data = data.analysis)
+
+m7 = lm(max.birds ~ status + session.type,
+        data = data.analysis)
+
+m8 = lm(max.birds ~ status + weather + session.type,
+        data = data.analysis)
+
+m9 = lm(max.birds ~ status + weather + session.type + rhino.no,
+        data = data.analysis)
+
+model.sel(m1, m2, m3, m4, m5, m6, m7, m8, m9)
+```
+
+
+```{r summary of m9}
+summary(m9)
+```
+
+```{r coefficient plots}
+coefplot(m9)
+```
+
+m9 intercept refers to rhino numbers = 2, during the evening, cloudy weather and before sprinkler installation.
+
+Therefore, m9 suggests that mynah numbers are lowest after the installation of the sprinklers, during the evening, when 2 rhinos are on exhibit and during the cloudy and/or rainy weather (not significant between these two levels). 
+
+So, mynah numbers increases with increasing rhinos (coefficient = 1.8203) on display. That is, every increase of one rhino leads to a increase in maximum number of mynahs by 1.82 (~ to 2).
+
+In other words, sampling in the afternoon also tends to result in a larger number of mynahs present; this has relevance to bird biology
+
+```{r result visualisation}
+data.analysis %>%
+  group_by(status) %>%
+  dplyr::summarise(mean.total = mean(total.mynah),
+                   mean.feed = mean(total.feed),
+                   max.birds = max(max.feed),
+                   max.total= max(max.birds))
+
+# mynah between status
+data.analysis %>%
+  ggplot(aes(x = status, y = max.birds)) +
+  geom_bar(stat = 'identity') + 
+  facet_grid(session.type~weather)
+
+# mynah count over time, trend, between status
+data.analysis %>%
+  ggplot() +
+  geom_point(aes(x = session.no, y = max.birds, colour = status))+
+  geom_line(aes(x = session.no, y = max.birds, colour = status)) +
+  facet_grid(.~status)
+
+```
